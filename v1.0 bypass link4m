@@ -1,0 +1,263 @@
+// ==UserScript==
+// @name         Bypass Link GUI (Fix Menu GUI & Strict Filter)
+// @namespace    http://tampermonkey.net/
+// @version      3.1
+// @description  Sửa lỗi hiển thị GUI, lọc bỏ token rác, chỉ bắt link đích/key chuẩn
+// @author       Gemini Support
+// @match        *://*.link4m.com/*
+// @match        *://*.link4m.co/*
+// @match        *://*.link4m.net/*
+// @match        *://*.link4m.org/*
+// @grant        GM_addStyle
+// @run-at       document-end
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // 1. TẠO STYLE CHO GIAO DIỆN
+    function injectStyles() {
+        if (document.getElementById('bypass-gui-css')) return;
+        const style = document.createElement('style');
+        style.id = 'bypass-gui-css';
+        style.textContent = `
+            #bypass-gui-box {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                width: 340px;
+                background: #181824;
+                color: #ffffff;
+                border-radius: 12px;
+                box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+                z-index: 99999999;
+                font-family: Arial, sans-serif;
+                border: 1px solid #2a2a3c;
+                overflow: hidden;
+                user-select: none;
+            }
+            #bypass-gui-header {
+                background: linear-gradient(135deg, #10b981, #047857);
+                padding: 10px 14px;
+                cursor: move;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            #bypass-gui-body {
+                padding: 14px;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }
+            .gui-status {
+                background: #222232;
+                padding: 10px;
+                border-radius: 8px;
+                font-size: 12px;
+                border-left: 4px solid #10b981;
+                word-break: break-all;
+            }
+            .gui-btn {
+                background: #10b981;
+                color: white;
+                border: none;
+                padding: 10px;
+                border-radius: 8px;
+                font-weight: bold;
+                cursor: pointer;
+                text-align: center;
+            }
+            .gui-btn:hover { background: #059669; }
+            .result-box {
+                background: #0f0f17;
+                border: 1px dashed #10b981;
+                padding: 10px;
+                border-radius: 6px;
+                font-size: 13px;
+                color: #10b981;
+                word-break: break-all;
+                font-weight: bold;
+                max-height: 100px;
+                overflow-y: auto;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // 2. KHỞI TẠO BẢNG GUI
+    function createUI() {
+        if (document.getElementById('bypass-gui-box')) return;
+        injectStyles();
+
+        const box = document.createElement('div');
+        box.id = 'bypass-gui-box';
+        box.innerHTML = `
+            <div id="bypass-gui-header">
+                <span>👩‍💻🤖spopBYPASS v1.0 (Learning)</span>
+                <button id="gui-minimize" style="background:transparent; border:none; color:white; font-size:16px; cursor:pointer;">-</button>
+            </div>
+            <div id="bypass-gui-body">
+                <div class="gui-status" id="gui-status-text">Đang lắng nghe dữ liệu từ server...</div>
+                <div id="gui-result-container" style="display:none;">
+                    <div style="font-size: 11px; color: #a1a1aa; margin-bottom: 4px;">Link đích / Key nhận được:</div>
+                    <div class="result-box" id="gui-result-text">Chưa có</div>
+                </div>
+                <button class="gui-btn" id="gui-action-btn">Kiểm tra lại ô Input</button>
+            </div>
+        `;
+        document.body.appendChild(box);
+
+        // Kéo thả GUI
+        const header = document.getElementById('bypass-gui-header');
+        let isDragging = false, startX, startY, initialX, initialY;
+
+        header.addEventListener('mousedown', function(e) {
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            initialX = box.offsetLeft;
+            initialY = box.offsetTop;
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', function(e) {
+            if (!isDragging) return;
+            box.style.left = (initialX + e.clientX - startX) + 'px';
+            box.style.top = (initialY + e.clientY - startY) + 'px';
+            box.style.right = 'auto';
+        });
+
+        document.addEventListener('mouseup', function() {
+            isDragging = false;
+        });
+
+        // Nút thu gọn GUI
+        document.getElementById('gui-minimize').addEventListener('click', function() {
+            const body = document.getElementById('bypass-gui-body');
+            const isHidden = (body.style.display === 'none');
+            body.style.display = isHidden ? 'flex' : 'none';
+            this.textContent = isHidden ? '-' : '+';
+        });
+
+        document.getElementById('gui-action-btn').addEventListener('click', scanInputs);
+    }
+
+    // 3. THUẬT TOÁN LỌC DỮ LIỆU SẠCH (CHỈ LẤY KEY/LINK THẬT)
+    function isRealTargetUrl(text) {
+        if (!text || typeof text !== 'string') return false;
+        if (!text.startsWith('http://') && !text.startsWith('https://')) return false;
+
+        const blacklist = ['google.com', 'recaptcha', 'link4m', 'facebook.com', 'gstatic', 'googleapis', '/api/'];
+        for (let i = 0; i < blacklist.length; i++) {
+            if (text.toLowerCase().includes(blacklist[i])) return false;
+        }
+        return true;
+    }
+
+    function isShortKey(text) {
+        if (!text || typeof text !== 'string') return false;
+        // Key hợp lệ: Dài từ 4 tới 25 ký tự, không dấu cách, không có dấu xuyệt url
+        if (text.length >= 4 && text.length <= 25 && !text.includes(' ') && !text.includes('/') && !text.startsWith('http')) {
+            return true;
+        }
+        return false;
+    }
+
+    function showFinalResult(text) {
+        const statusText = document.getElementById('gui-status-text');
+        const container = document.getElementById('gui-result-container');
+        const resultText = document.getElementById('gui-result-text');
+
+        if (statusText && container && resultText) {
+            statusText.innerHTML = '✅ Đã lấy thành công dữ liệu!';
+            container.style.display = 'block';
+
+            if (text.startsWith('http')) {
+                resultText.innerHTML = '<a href="' + text + '" target="_blank" style="color:#10b981; text-decoration:underline;">' + text + '</a>';
+            } else {
+                resultText.textContent = text;
+            }
+        }
+    }
+
+    // 4. BẮT GÓI TIN MẠNG
+    function initInterceptor() {
+        const originalFetch = window.fetch;
+        window.fetch = async function(...args) {
+            const response = await originalFetch.apply(this, args);
+            try {
+                const clone = response.clone();
+                clone.text().then(function(text) {
+                    analyzeStrictData(text);
+                }).catch(function(){});
+            } catch (err) {}
+            return response;
+        };
+
+        const originalSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function() {
+            this.addEventListener('load', function() {
+                try {
+                    if (this.responseText) analyzeStrictData(this.responseText);
+                } catch (err) {}
+            });
+            return originalSend.apply(this, arguments);
+        };
+    }
+
+    function analyzeStrictData(responseText) {
+        if (!responseText || responseText.length < 4 || responseText.length > 1500) return;
+
+        try {
+            const json = JSON.parse(responseText);
+            const possibleKeys = ['url', 'link', 'destination', 'target', 'key', 'code', 'data'];
+
+            for (let i = 0; i < possibleKeys.length; i++) {
+                let k = possibleKeys[i];
+                if (json[k]) {
+                    let val = String(json[k]).trim();
+                    if (isRealTargetUrl(val) || isShortKey(val)) {
+                        showFinalResult(val);
+                        return;
+                    }
+                }
+            }
+        } catch (e) {
+            let val = responseText.trim();
+            if (isRealTargetUrl(val) || isShortKey(val)) {
+                showFinalResult(val);
+            }
+        }
+    }
+
+    function scanInputs() {
+        const inputs = document.querySelectorAll('input, textarea');
+        let found = false;
+        inputs.forEach(function(input) {
+            let val = input.value.trim();
+            if (isRealTargetUrl(val) || isShortKey(val)) {
+                showFinalResult(val);
+                found = true;
+            }
+        });
+        if (!found) {
+            const status = document.getElementById('gui-status-text');
+            if (status) status.innerHTML = 'Đang tiếp tục lắng nghe server nhả key...';
+        }
+    }
+
+    // Tự động chạy ngay khi DOM sẵn sàng
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function() {
+            createUI();
+            initInterceptor();
+        });
+    } else {
+        createUI();
+        initInterceptor();
+    }
+
+})();
